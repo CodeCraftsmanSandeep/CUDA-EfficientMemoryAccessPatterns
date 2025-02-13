@@ -35,7 +35,7 @@ __device__ long long int atomicAdd(long long int* address, long long int val){
     partial_sum += __shfl_down_sync(0x0000000F, partial_sum,  2);                                               \
     partial_sum += __shfl_down_sync(0x00000003, partial_sum,  1);                                               \
                                                                                                                 \
-    extern __shared__ long long int warp_partial_sum[];                                                                     \
+    extern __shared__ long long int warp_partial_sum[];                                                         \
     const uint8_t lane_id = (threadIdx.x & 31);                                                                 \
     const uint8_t warp_id = (threadIdx.x >> 5);                                                                 \
                                                                                                                 \
@@ -56,13 +56,12 @@ __device__ long long int atomicAdd(long long int* address, long long int val){
 /*--------------------------------------------------------------------------------------------------------------*/
 
 template <const int block_size_power>
-__global__ void treeReductionGridStridedKernelPadded (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
-    uint32_t iter = threadIdx.x + (blockIdx.x << block_size_power);
-    
-    long long int partial_sum = 0;
+__global__ void treeReductionGridStrideKernelPadded (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
+    unsigned int iter = threadIdx.x + (blockIdx.x << block_size_power);
 
-    // Branch prediction: Always take
-    while(__builtin_expect(iter < N, 1)){
+    // Grid-stride access
+    long long int partial_sum = 0;
+    while(__builtin_expect(iter < N, 1)){   // Branch prediction: Always take
         partial_sum += a[iter];
         iter += (gridDim.x << block_size_power);
     } 
@@ -71,17 +70,24 @@ __global__ void treeReductionGridStridedKernelPadded (const unsigned int N, cons
 }
 
 template <const int block_size_power>
-__global__ void treeReductionGridStridedKernel (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
-    uint32_t iter = threadIdx.x + (blockIdx.x << block_size_power);
+__global__ void treeReductionBlockStrideKernel (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
+    const unsigned int chuncks_per_block    = ((N >> block_size_power) / gridDim.x);
+    const unsigned int work_items_per_block = chuncks_per_block << block_size_power; 
     
-    long long int partial_sum = a[iter];
-    iter += (gridDim.x << block_size_power);
+    unsigned int iter       = work_items_per_block * blockIdx.x + threadIdx.x;
+    const unsigned int end  = iter + work_items_per_block;
 
-    // Branch prediction: Always take
-    while(__builtin_expect(iter < N, 1)){
+    // Block-stride access
+    long long int partial_sum = a[iter];
+    iter += (1 << block_size_power);
+    while(__builtin_expect(iter < end, 1)){
         partial_sum += a[iter];
-        iter += (gridDim.x << block_size_power);
+        iter += (1 << block_size_power);
     }
+
+    // Remaining work-items
+    iter = work_items_per_block * gridDim.x + threadIdx.x + (blockIdx.x << block_size_power);
+    if(iter < N) partial_sum += a[iter];
 
     TREE_REDUCE(partial_sum, total_sum, block_size_power);
 }
@@ -96,22 +102,22 @@ long long int computeReduction(const unsigned int N, const int* d_a)
     // Kernel invocation
     if (N < block_size_256 * min_work_per_thread)
     {
-        treeReductionGridStridedKernelPadded <block_size_256_power> 
+        treeReductionGridStrideKernelPadded <block_size_256_power> 
                 <<< 1, block_size_256, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
     else if (N < num_blocks_256 * block_size_256 * min_work_per_thread) 
     {
-        treeReductionGridStridedKernel       <block_size_256_power>
+        treeReductionBlockStrideKernel       <block_size_256_power>
                 <<< (N >> block_size_256_power) / min_work_per_thread, block_size_256, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
     else if (N < num_blocks_256 * block_size_512 * min_work_per_thread) 
     {
-        treeReductionGridStridedKernel       <block_size_256_power> 
+        treeReductionBlockStrideKernel       <block_size_256_power> 
                <<< num_blocks_256, block_size_256, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
     else
     {
-       treeReductionGridStridedKernel       <block_size_512_power> 
+       treeReductionBlockStrideKernel       <block_size_512_power> 
               <<< num_blocks_256, block_size_512, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
 
