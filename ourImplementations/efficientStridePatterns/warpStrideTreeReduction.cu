@@ -28,87 +28,67 @@ __device__ long long int atomicAdd(long long int* address, long long int val){
     return old;
 }
 
-/*-------------------------------------------*Tree Reduction*---------------------------------------------------*/
-#define TREE_REDUCE(partial_sum, total_sum, block_size_power)                                                   \
-    partial_sum += __shfl_down_sync(0xFFFFFFFF, partial_sum, 16);                                               \
-    partial_sum += __shfl_down_sync(0x0000FFFF, partial_sum,  8);                                               \
-    partial_sum += __shfl_down_sync(0x000000FF, partial_sum,  4);                                               \
-    partial_sum += __shfl_down_sync(0x0000000F, partial_sum,  2);                                               \
-    partial_sum += __shfl_down_sync(0x00000003, partial_sum,  1);                                               \
-                                                                                                                \
-    extern __shared__ long long int warp_partial_sum[];                                                         \
-    const uint8_t lane_id = (threadIdx.x & 31);                                                                 \
-    const uint8_t warp_id = (threadIdx.x >> 5);                                                                 \
-                                                                                                                \
-    if (lane_id == 0) warp_partial_sum[warp_id] = partial_sum;                                                  \
-    __syncthreads();                                                                                            \
-                                                                                                                \
-    if (warp_id == 0){                                                                                          \
-        partial_sum = warp_partial_sum[lane_id];                                                                \
-                                                                                                                \
-        if constexpr (block_size_power >= 10)  partial_sum += __shfl_down_sync(0xFFFFFFFF, partial_sum, 16);    \
-        if constexpr (block_size_power >=  9)  partial_sum += __shfl_down_sync(0x0000FFFF, partial_sum,  8);    \
-        if constexpr (block_size_power >=  8)  partial_sum += __shfl_down_sync(0x000000FF, partial_sum,  4);    \
-        if constexpr (block_size_power >=  7)  partial_sum += __shfl_down_sync(0x0000000F, partial_sum,  2);    \
-        if constexpr (block_size_power >=  6)  partial_sum += __shfl_down_sync(0x00000003, partial_sum,  1);    \
-                                                                                                                \
-        if (lane_id == 0) atomicAdd(total_sum, partial_sum);                                                    \
-    }                                                                                                           \
-/*--------------------------------------------------------------------------------------------------------------*/
-
 template <const int block_size_power>
-__global__ void treeReductionGridStrideKernelPadded (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
-    unsigned int iter = threadIdx.x + (blockIdx.x << block_size_power);
+__global__ void treeReductionWarpStrideKernel (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum)
+{
+    const unsigned int global_thread_id    =    ((blockIdx.x << block_size_power) + threadIdx.x);
+    const unsigned int global_warp_id      =    (global_thread_id >> warp_size_power);
+    
+    const unsigned int num_chuncks         =    (N >> warp_size_power);
+    const unsigned int num_warps           =    (gridDim.x << (block_size_power - warp_size_power));
+    const unsigned int chuncks_per_warp    =    (num_chuncks / num_warps);
+    const unsigned int work_per_warp       =    chuncks_per_warp << warp_size_power;
 
-    // Grid-stride access
-    long long int partial_sum = 0;
-    while(__builtin_expect(iter < N, 1)){  // Branch prediction: Always take
-        partial_sum += a[iter];
-        iter += (gridDim.x << block_size_power);
-    } 
-
-    TREE_REDUCE(partial_sum, total_sum, block_size_power);
-}
-
-template <const int block_size_power>
-__global__ void treeReductionWarpStrideKernel (const unsigned int N, const int* __restrict__ a, long long int* __restrict__ total_sum){
-    const unsigned int number_of_chuncks   = (N >> warp_size_power);
-    const unsigned int number_of_warps     = (gridDim.x << (block_size_power - warp_size_power));
-    const unsigned int chuncks_per_warp    = (number_of_chuncks / number_of_warps);
-    const unsigned int work_items_per_warp = chuncks_per_warp << warp_size_power;
-
-    const unsigned int global_thread_id    = ((blockIdx.x << block_size_power) + threadIdx.x);
-    const unsigned int global_warp_id      = (global_thread_id >> warp_size_power);
-
-    unsigned int iter   = work_items_per_warp * global_warp_id + (threadIdx.x & (warp_size - 1));
-    const unsigned end  = iter + work_items_per_warp;
+    unsigned int iter                      =    ((work_per_warp * global_warp_id) + (threadIdx.x & 31));
+    const unsigned int end                 =    (iter + work_per_warp);
+    constexpr unsigned int warp_stride     =    warp_size;
 
     // Warp-stride access
-    long long int partial_sum = a[iter];
-    iter += (1 << warp_size_power);
+    long long int partial_sum = 0;
     while(__builtin_expect(iter < end, 1)){
         partial_sum += a[iter];
-        iter += (1 << warp_size_power);
+        iter += warp_stride;
     }
 
     // Remaining work-items
-    iter = work_items_per_warp * number_of_warps + global_thread_id;
+    iter = work_per_warp * num_warps + global_thread_id;
     if(iter < N) partial_sum += a[iter];
-
-    TREE_REDUCE(partial_sum, total_sum, block_size_power);
+    
+    // Tree reduction
+    partial_sum += __shfl_down_sync(0xFFFFFFFF, partial_sum, 16);                                               
+    partial_sum += __shfl_down_sync(0x0000FFFF, partial_sum,  8);                                               
+    partial_sum += __shfl_down_sync(0x000000FF, partial_sum,  4);                                               
+    partial_sum += __shfl_down_sync(0x0000000F, partial_sum,  2);                                               
+    partial_sum += __shfl_down_sync(0x00000003, partial_sum,  1);                                               
+                                                                                                                
+    extern __shared__ long long int warp_partial_sum[];                                                         
+    const uint8_t lane_id = (threadIdx.x & 31);                                                                
+    const uint8_t warp_id = (threadIdx.x >> 5);                                                                
+                                                                                                                
+    if (lane_id == 0) warp_partial_sum[warp_id] = partial_sum;                                                  
+    __syncthreads();                                                                                            
+                                                                                                                
+    if (warp_id == 0){                                                                                         
+        partial_sum = warp_partial_sum[lane_id];                                                               
+                                                                                                                
+        if constexpr (block_size_power >= 10)  partial_sum += __shfl_down_sync(0xFFFFFFFF, partial_sum, 16);    
+        if constexpr (block_size_power >=  9)  partial_sum += __shfl_down_sync(0x0000FFFF, partial_sum,  8);    
+        if constexpr (block_size_power >=  8)  partial_sum += __shfl_down_sync(0x000000FF, partial_sum,  4);    
+        if constexpr (block_size_power >=  7)  partial_sum += __shfl_down_sync(0x0000000F, partial_sum,  2);    
+        if constexpr (block_size_power >=  6)  partial_sum += __shfl_down_sync(0x00000003, partial_sum,  1);    
+                                                                                                                
+        if (lane_id == 0) atomicAdd(total_sum, partial_sum);                                                    
+    }        
 }
 
-long long int computeReduction(const unsigned int N, const int* d_a)
+void computeReduction(const unsigned int N, const int* d_a, long long int* d_sum, long long int init)
 {
-    // Allocate memory on device for result
-    long long int* d_sum;
-    cudaMalloc(&d_sum, sizeof(long long int));
-    cudaMemset(d_sum, 0, sizeof(long long int));
+    cudaMemset(d_sum, init, sizeof(long long int));
 
     // Kernel invocation
     if (N < block_size_256 * min_work_per_thread)
     {
-        treeReductionGridStrideKernelPadded <block_size_256_power> 
+        treeReductionWarpStrideKernel      <block_size_256_power> 
                 <<< 1, block_size_256, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
     else if (N < num_blocks_256 * block_size_256 * min_work_per_thread) 
@@ -127,12 +107,6 @@ long long int computeReduction(const unsigned int N, const int* d_a)
               <<< num_blocks_256, block_size_512, warp_size * sizeof(long long int) >>> (N, d_a, d_sum);
     }
 
-    // Copying result back to host
-    long long int sum;
-    cudaMemcpy(&sum, d_sum, sizeof(long long int), cudaMemcpyDeviceToHost);
-
-    // Free memory on device
-    cudaFree(d_sum);
-
-    return sum;
+    cudaDeviceSynchronize();
+    return;
 }

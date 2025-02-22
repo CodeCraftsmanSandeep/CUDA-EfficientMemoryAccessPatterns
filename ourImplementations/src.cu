@@ -96,7 +96,7 @@ void printResult(result* curr_result){
     return;
 }
 
-long long int computeReduction(const unsigned int, const int*);
+long long int computeReduction(const unsigned int, const int*, long long int*, long long int);
 
 double findMean(const std::vector <double> times){
     if(times.size() == 0) return 0;
@@ -129,7 +129,7 @@ double findStandardDeviation(const std::vector<double> times) {
     return std::sqrt(variance);
 }
 
-void getResult(const size_t N, int* a, result* curr_result){
+void getResult(const size_t N, int* a, result* curr_result, long long int host_sum){
     // Allocating memory on device
     int* d_a;
     cudaError_t err = cudaMalloc(&d_a, N * sizeof(int));
@@ -145,18 +145,34 @@ void getResult(const size_t N, int* a, result* curr_result){
     std::vector <double> times;
     long long int sum, curr_sum;
 
+    long long int* d_sum;
+    cudaMalloc(&d_sum, sizeof(long long int));
+
+    double start_time, end_time, time_consumed;
+
     // Computing Reduction and saving result
-    double start_time = rtClock();
-    sum = computeReduction (N, d_a);
-    double end_time = rtClock();
+    start_time = rtClock();
+    computeReduction (N, d_a, d_sum, 0LL);
+    cudaMemcpy(&sum, d_sum, sizeof(long long int), cudaMemcpyDeviceToHost);
+    end_time = rtClock();
     
-    double time_consumed = end_time - start_time;
+    time_consumed = end_time - start_time;
     times.push_back(time_consumed * 1e3);
+
+    if(sum != host_sum){
+        printError(ERROR_FILE);
+        fprintf(ERROR_FILE, "Host sum (%lld) != Device sum (%lld)\n", host_sum, sum);
+        free(curr_result);
+        cudaFree(d_a);
+        free(a);
+        exit(EXIT_FAILURE);
+    }
 
     for(size_t RUN = 1; RUN < NUM_RUNS; RUN++){
         // Computing Reduction and saving result
         start_time = rtClock();
-        curr_sum = computeReduction (N, d_a);
+        computeReduction (N, d_a, d_sum, 0LL);
+        cudaMemcpy(&curr_sum, d_sum, sizeof(long long int), cudaMemcpyDeviceToHost);
         end_time = rtClock();
 
         time_consumed = end_time - start_time;
@@ -179,6 +195,12 @@ void getResult(const size_t N, int* a, result* curr_result){
     curr_result->setStandardDeviation(findStandardDeviation(times));
 
     return;
+}
+
+long long int host_reduce(const unsigned int N, int* a){
+    long long int host_sum = 0;
+    for(unsigned int i = 0; i < N; i++) host_sum += a[i];
+    return host_sum;
 }
 
 __global__ void wakeUpKernel(){
@@ -261,8 +283,10 @@ int main(const int argc, char* argv[]){
         curr_result->setFileName(input_file_name);
         curr_result->setNumRuns(NUM_RUNS);
 
+        long long int host_sum = host_reduce(N, a);
+
         // Calling getResult function
-        getResult (N, a, curr_result);
+        getResult (N, a, curr_result, host_sum);
 
         // Calling printResult function
         printResult (curr_result);

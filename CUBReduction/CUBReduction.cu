@@ -7,6 +7,7 @@
 #include <numeric>
 #include <thrust/reduce.h>
 #include <thrust/device_vector.h>
+#include <cub/cub.cuh>
 
 #define printError(fp) fprintf(fp, "Error in file %s at line: %d\n", __FILE__, __LINE__) 
 #define ERROR_FILE stderr
@@ -129,18 +130,34 @@ double findStandardDeviation(const std::vector<double> times) {
     return std::sqrt(variance);
 }
 
-void getResult(const size_t N, int* a, result* curr_result, long long int host_sum){
+void getResult(const unsigned int N, int* a, result* curr_result, long long int host_sum){
     // Allocating memory on device
-    thrust::device_vector <int> d_a(a, a + N);
+    int* d_a;
+    cudaMalloc(&d_a, N * sizeof(int));
+    cudaMemcpy(d_a, a, N * sizeof(int), cudaMemcpyHostToDevice);
 
-    std::vector <double> times;
     long long int sum, curr_sum;
 
-    // Computing Reduction and saving result
+    std::vector<double> times;
+    long long int *d_sum;
+    cudaMalloc(&d_sum, sizeof(long long int));
+
+    // Allocate temporary storage for CUB
+    void* d_temp_storage = nullptr;
+    size_t temp_storage_bytes = 0;
+
+    // Compute the required temporary storage for CUB reduction
+    cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_a, d_sum, N, cub::Sum(), 0LL);
+
+    // Allocate temporary storage
+    cudaMalloc(&d_temp_storage, temp_storage_bytes);
+
+    // Performing the reduction with CUB
     double start_time = rtClock();
-    sum = thrust::reduce(d_a.begin(), d_a.end(), 0LL, thrust::plus<long long int> ());
+    cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_a, d_sum, N, cub::Sum(), 0LL);
+    cudaMemcpy(&sum, d_sum, sizeof(long long int), cudaMemcpyDeviceToHost);
     double end_time = rtClock();
-    
+
     double time_consumed = end_time - start_time;
     times.push_back(time_consumed * 1e3);
 
@@ -149,31 +166,44 @@ void getResult(const size_t N, int* a, result* curr_result, long long int host_s
         fprintf(ERROR_FILE, "Host sum (%lld) != Device sum (%lld)\n", host_sum, sum);
         free(curr_result);
         free(a);
+        cudaFree(d_temp_storage);
+        cudaFree(d_a);
         exit(EXIT_FAILURE);
     }
 
+    // Perform additional runs for timing
     for(size_t RUN = 1; RUN < NUM_RUNS; RUN++){
-        // Computing Reduction and saving result
+        // Performing the reduction with CUB
         start_time = rtClock();
-        curr_sum = thrust::reduce(d_a.begin(), d_a.end(), 0LL, thrust::plus<long long int> ());
+        cub::DeviceReduce::Reduce(d_temp_storage, temp_storage_bytes, d_a, d_sum, N, cub::Sum(), 0LL);
+        cudaMemcpy(&curr_sum, d_sum, sizeof(long long int), cudaMemcpyDeviceToHost);
         end_time = rtClock();
 
         time_consumed = end_time - start_time;
         times.push_back(time_consumed * 1e3);
-        
+
         if(curr_sum != sum){
             printError(ERROR_FILE);
             printf("curr_sum = %lld, prev_sum = %lld\n", curr_sum, sum);
             fprintf(ERROR_FILE, "The computation is incorrect!\n");
             free(curr_result);
+            free(a);
+            cudaFree(d_temp_storage);          
+            cudaFree(d_a);
             exit(EXIT_FAILURE);
         }
     }
 
+    // Set the results
     curr_result->setSum(sum);
     curr_result->setMeanTime(findMean(times));
     curr_result->setMedianTime(findMedian(times));
     curr_result->setStandardDeviation(findStandardDeviation(times));
+
+    // Free temporary storage
+    cudaFree(d_temp_storage);
+    cudaFree(d_a);
+    cudaFree(d_sum);
 
     return;
 }
