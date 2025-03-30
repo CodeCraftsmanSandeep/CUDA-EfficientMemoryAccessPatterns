@@ -1,4 +1,3 @@
-```markdown
 # CUDA-Efficient Memory Access Patterns
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
