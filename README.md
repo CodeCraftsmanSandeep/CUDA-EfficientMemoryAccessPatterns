@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/username/repository)
-[![CUDA Version](https://img.shields.io/badge/CUDA-sm_75-blue.svg)](https://developer.nvidia.com/cuda-zone)
+[![CUDA Version](https://img.shields.io/badge/CUDA-sm_75-blue.svg)](https://developer.nvidia.com/cuda-gpus)
 
 This repository presents state-of-the-art memory access patterns tailored for CUDA applications. It extends the widely adopted grid-stride access paradigm with innovative techniques that enhance memory coalescence, spatial locality, and load balancing, while minimizing warp divergence.
 
