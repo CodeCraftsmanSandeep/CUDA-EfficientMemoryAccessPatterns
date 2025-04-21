@@ -1,3 +1,5 @@
+// Takes two file paths as command line arguments and compute L2_norm from host
+
 #include <cuda.h>
 #include <stdio.h>
 #include <stdlib.h>
