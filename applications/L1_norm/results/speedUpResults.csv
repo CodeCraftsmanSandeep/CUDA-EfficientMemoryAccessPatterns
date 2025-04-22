@@ -1,4 +1,4 @@
-n,gridStride_time,warpStride_time,blockStride_time,warpStride_speedup_over_grid,blockStride_speedup_over_grid
+n,gridStride_time,warpStride_time,blockStride_time,warpStride_speedup_over_gridStride,blockStride_speedup_over_gridStride
 100000,0.020114,0.016277,0.016668,1.23573140013516,1.2067434605231582
 162377,0.025532,0.020374,0.020439,1.253165799548444,1.2491804882822055
 263665,0.034592,0.027505,0.032447,1.2576622432285038,1.0661078065768792
